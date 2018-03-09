@@ -90,6 +90,12 @@ class sichuanmj_client:
 			cnt=np.argwhere(self.common_info.peng[pos,0,:]==pai).size
 			if cnt>0:
 				self.gang_able.append(pai)
+			#检查手上是否有未杠的牌
+			peng=self.common_info.peng[pos,0,:]
+			for i in range(4):
+				if peng[i]>0 and not peng[i] in self.gang_able:
+					cnt = np.argwhere(self.me.my_hand[0,:] == peng[i]).size
+					if cnt>0: self.gang_able.append(peng[i])
 			return np.array(self.gang_able)
 		else:
 			if (pai - (self.common_info.que[pos] - 1) * 9 - 1) * (pai - self.common_info.que[pos] * 9) <= 0:
@@ -539,7 +545,7 @@ class sichuanmj_server:
 		next = (player_cnt + 1) % 4
 		while self.common_info.status[next] == 1:
 			next = (next + 1) % 4
-			if next==player_cnt: self.error(player_cnt,201)
+			if next==player_cnt: self.endset()
 		return next
 
 	def validate_actlist(self,player_cnt,actlist,allow):
@@ -626,3 +632,4 @@ class sichuanmj_server:
 						if k==i: continue
 						self.jiesuan(k,1)
 
+		print (self.bonus)
