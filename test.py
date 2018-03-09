@@ -7,7 +7,6 @@ def main():
 	server.restart(1)
 	for i in range(4):
 		server.dingque(i)
-	test=server.players[0].flatten_to_train()
 	server.input(0)
 
 if __name__ == "__main__":

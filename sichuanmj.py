@@ -353,7 +353,7 @@ class sichuanmj_server:
 		pai=self.fetch(1)[0]
 		me=self.players[player_cnt]
 		#判断是否可以杠或者胡牌
-		fan=me.isHu(pai, player_cnt,Gang)
+		fan=me.isHu(pai,Gang)
 		if me.isGang(pai,player_cnt).size >0: flag_gang=1
 		if fan> 0: flag_hu = 1
 		allow=[0]
@@ -379,7 +379,7 @@ class sichuanmj_server:
 				#抢杠
 				rel_max=0
 				for i in range(4):
-					fan = self.players[i].isHu(pai,i,1)
+					fan = self.players[i].isHu(pai,1)
 					if fan>0:
 						actlist.fill(0)
 						actlist[4]=fan
@@ -429,7 +429,7 @@ class sichuanmj_server:
 		# 放炮
 		for i in range(4):
 			if i==player_cnt or self.common_info.status[i]==1 : continue
-			fan=self.players[i].isHu(pai,i,Gang)
+			fan=self.players[i].isHu(pai,Gang)
 			if fan>0:
 				actlist[4]=fan
 				actlist=self.players[i].act(actlist,self)
