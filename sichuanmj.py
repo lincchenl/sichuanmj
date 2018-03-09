@@ -22,7 +22,7 @@ class sichuanmj_public:
 	#第三维是出牌玩家号
 	def __init__(self):
 		#第一维 0代表打的牌 1代表打牌的人
-		self.drop=np.zeros([2,56],dtype=np.int)
+		self.drop=np.zeros([2,72],dtype=np.int)
 		#四位玩家的公共视图
 		self.status=np.zeros(4,dtype=np.int) #0 进行中，1 胡牌
 		self.hand_cnt=np.zeros(4,dtype=np.int)
@@ -489,7 +489,8 @@ class sichuanmj_server:
 					self.add_gang(i,player_cnt,0,pai)
 					self.del_hand(i,pai,3)
 					#去除杠牌标志
-					self.players[i].gang_able.remove(pai)
+					#别人打的牌不会放入到gang_able里面
+					#self.players[i].gang_able.remove(pai)
 					# 奖金结算
 					self.jiesuan(i,2)
 					self.jiesuan(player_cnt,-2)
