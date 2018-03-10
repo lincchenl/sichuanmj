@@ -4,21 +4,25 @@ import sichuanmj as sc
 class simple_gui():
 	root=None
 	list=None
-	list2=None
+	user=[None,None,None,None]
+	drop=None
 	bt=None
 	myno=0
 	def __init__(self):
 		# 初始化图形界面：
 		self.root = Tk()
-		self.list = Listbox(self.root, width=90, height=5)
-		self.list2=Listbox(self.root, width=90, height=20)
+		self.list = Listbox(self.root, width=90, height=20)
+		for i in range(4):
+			self.user[i]=Label(self.root,width=90,height=1,anchor=W,bg="#808000")
+			self.user[i].grid(row=i,column=0,columnspan=90,sticky=W)
+		self.drop = Label(self.root, width=90, height=4,anchor=NW,bg='#6495ED')
 		self.bt = Button(self.root,width=10, text="执行", state=DISABLED, command=self.getstr)
-		self.list.grid(row=0, column=0, columnspan=35, sticky=W)
-		self.bt.grid(row=4)
-		self.list2.grid(row=5, column=0, columnspan=35, sticky=W)
+		self.drop.grid(row=4,column=0,columnspan=90,sticky=W)
+		self.list.grid(row=8, column=0, columnspan=35, sticky=W)
+		self.bt.grid(row=9)
+
 	def update(self,server,actlist,user,valid):
 		self.list.delete(0, END)
-		self.list2.delete(0,END)
 		# 显示手牌
 		for i in range(4):
 			me = server.players[i]
@@ -38,21 +42,37 @@ class simple_gui():
 				string = str_hand+str_mo+str_peng+str_gang+str_que
 			else:
 				string = str_hand + str_peng + str_gang + str_que
+			self.user[i].configure(text=string)
+		drop_arr=server.common_info.drop[0,:]
+		drop_arr=drop_arr[drop_arr.nonzero()]
+		arr1=drop_arr[0:14]
+		arr2=drop_arr[14:28]
+		arr3=drop_arr[28:42]
+		arr4=drop_arr[42:56]
+		string=self.arr_to_str(arr1)+"\n"+ self.arr_to_str(arr2)+"\n"+ \
+		       self.arr_to_str(arr3) + "\n" +self.arr_to_str(arr4)
+		self.drop.configure(text=string)
+		for i in range(4):
+			if i==user:
+				self.user[i].configure(fg='RED')
+			else:
+				if server.common_info.status[i]==1:
+					self.user[i].configure(fg='GREEN')
+				else:
+					self.user[i].configure(fg='BLUE')
 
-			self.list.insert(i, string)
 		for i in valid:
 			string=self.translate(i)
-			self.list2.insert(END,string)
+			self.list.insert(END,string)
 		#显示命令
-		self.list.select_set(user)
 		self.bt.configure(state=ACTIVE)
 		self.root.mainloop()
 		return self.myno
 	def getstr(self):
-		sel=self.list2.curselection()
+		sel=self.list.curselection()
 		if len(sel)==1:
 			self.myno=sel[0]
-			print (self.list2.get(self.myno))
+			print (self.list.get(self.myno))
 			self.root.quit()
 
 	def arr_to_str(self,arr):
