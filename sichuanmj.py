@@ -189,9 +189,13 @@ class sichuanmj_client:
 	#接受并执行一个动作
 	def act(self,actlist,server):
 		g=server.g
+		pos=self.me.my_position
 		valid=self.valid_oper(actlist)
-		actno=self.machine_choose(valid,0.9)
-		#actno=g.update(server,actlist,self.me.my_position,valid)
+		if False:
+			hint = self.ai_cal(valid)
+			actno = g.update(server, actlist, self.me.my_position, valid,hint)
+		else:
+			actno=self.machine_choose(valid,0.5)
 		self.actlist[:]=valid[actno][:]
 		self.actlist_e[:]=self.actlist_to_extended(self.actlist)
 		self.decision_stack.append(self.flatten_to_train())
@@ -268,21 +272,21 @@ class sichuanmj_client:
 		peng=self.common_info.peng[pos,0,:]
 		result=np.zeros(14+14+18+1+3,dtype=np.int)
 		if actlist[0]>0:
-			if actlist not in hand:
+			if not actlist[0] in hand:
 				result[0]=1
 			else:
-				no=np.where(hand==actlist[0])
-				result[no[0]+1]=1
+				no=np.argwhere(hand==actlist[0])[0]
+				result[no+1]=1
 		elif actlist[2]>0:
-			no=np.where(peng==actlist[2])
-			result[14+no[0]]=1
+			no=np.argwhere(hand==actlist[2])[0]
+			result[14+no]=1
 		elif actlist[3]>0:
 			if actlist[3] in hand:
-				no=np.where(hand==actlist[3])
-				result[14 + 14 + no[0]] = 1
+				no=np.argwhere(hand==actlist[3])[0]
+				result[14 + 14 + no] = 1
 			else:
-				no=np.where(peng==actlist[3])
-				result[14 + 14 +14+ no[0]] = 1
+				no=np.where(peng==actlist[3])[0]
+				result[14 + 14 +14+ no] = 1
 		elif actlist[4]>0:
 			result[14+14+18]=1
 		elif actlist[5]>0:
@@ -291,24 +295,25 @@ class sichuanmj_client:
 
 	def machine_choose(self,valid,ratio):
 		cnt=len(valid)
-		max=-999
-		input=np.empty([1,300],dtype=np.float)
-		output=np.empty([1,1],dtype=np.float)
-		index=0
+		output=self.ai_cal(valid)
+		if np.random.rand()>=ratio:
+			#用softmax把赢钱的期望转化为选择的概率
+			e=np.exp(output)
+			e_sum=np.sum(e)
+			index=np.random.choice(cnt,1,p=(e/e_sum))[0]
+		else:
+			index=np.argmax(output)
+		return index
+
+	def ai_cal(self,valid):
+		cnt=len(valid)
+		input=np.empty([cnt,300],dtype=np.float)
 		for i in range(cnt):
 			self.actlist_e[:]=self.actlist_to_extended(valid[i])
-			input[:]=self.flatten_to_train()
-			self.ai.input=input
-			self.ai.forward(train=False)
-			output[:,:]=self.ai.output
-			if output[0,0]>max:
-				max=output[0,0]
-				index=i
-		p=np.random.random()
-		if p<=ratio:
-			return index
-		else:
-			return int(np.random.random()*(cnt-1))
+			input[i,:]=self.flatten_to_train()
+		self.ai.input=input
+		self.ai.forward(train=False)
+		return self.ai.output[:,0]
 
 
 #   服务器视图
@@ -317,27 +322,31 @@ class sichuanmj_server:
 	common_info=None
 	pool=None
 	g=None
+	checkpoint=0
 	#杠牌收钱的记录，用来最后查叫的时候赔钱退钱用
 	gang_stack=None
 	master_cnt=0 #庄家
 	step=-1
 	def __init__(self):
+		#初始化时间
+		self.checkpoint=time.time()
 		#初始化ai
+		ratio=0.001
 		ai=mnn.mnn()
 		fc1 = mnn.full_connect(300, 200)
 		fc2 = mnn.full_connect(200, 200)
 		fc3 = mnn.full_connect(200, 1)
-		fc1.opti = mnn.adam(0.001)
-		fc2.opti = mnn.adam(0.001)
-		fc3.opti = mnn.adam(0.001)
+		fc1.opti = mnn.adam(ratio)
+		fc2.opti = mnn.adam(ratio)
+		fc3.opti = mnn.adam(ratio)
 		ai.addlayer(fc1)
-		ai.addlayer(mnn.active_function(1)) #relu
+		ai.addlayer(mnn.active_function(1)) #selu
 		ai.addlayer(fc2)
-		ai.addlayer(mnn.active_function(1)) #relu
+		ai.addlayer(mnn.active_function(1)) #selu
 		ai.addlayer(fc3)
 		ai.addlayer(mnn.active_function(1))
 		#读取已经训练的数据
-		#ai=ai.load("d:\\paras\\mj.pkl")
+		ai=ai.load("d:\\paras\\mj.pkl")
 		#初始化公共视图
 		self.common_info=sichuanmj_public()
 		self.players=np.zeros(4,dtype=sichuanmj_client)
@@ -504,12 +513,7 @@ class sichuanmj_server:
 					self.del_hand(player_cnt, actlist[3], 4)
 					self.add_gang(player_cnt, player_cnt, 1, actlist[3])
 					self.add_hand(player_cnt,pai)
-				for i in range(4):
-					if i==player_cnt:
-						self.jiesuan(i,6)
-					else:
-						self.gang_stack.append([player_cnt, i, 2])
-						self.jiesuan(i,-2)
+				self.gangpai(player_cnt,player_cnt,1)
 			else :  #补杠
 				#抢杠
 				rel_max=0
@@ -532,12 +536,7 @@ class sichuanmj_server:
 				if actlist[3] == pai:   #有钱的补杠
 					self.add_gang(player_cnt,player_cnt,2,pai)
 					self.del_peng(player_cnt,pai)
-					for i in range(4):
-						if i==player_cnt:
-							self.jiesuan(i,3)
-						else:
-							self.gang_stack.append([player_cnt, i, 1])
-							self.jiesuan(i,-1)
+					self.gangpai(player_cnt,player_cnt,2)
 				else:
 					self.add_gang(player_cnt,player_cnt,3,actlist[3])
 					self.del_peng(player_cnt,actlist[3])
@@ -617,9 +616,7 @@ class sichuanmj_server:
 					self.add_gang(i,player_cnt,0,pai)
 					self.del_hand(i,pai,3)
 					# 奖金结算
-					self.gang_stack.append([i,player_cnt,2])
-					self.jiesuan(i,2)
-					self.jiesuan(player_cnt,-2)
+					self.gangpai(i,player_cnt,2)
 					return self.input(i,1)
 
 		#出牌
@@ -678,32 +675,57 @@ class sichuanmj_server:
 
 	def jiesuan(self,player,money):
 		self.bonus[player]+=money
-		#以后完成，每当有钱的输赢产生的时候就喂ai
-
+		self.feed_ai("d:\\paras\\checkpoint.pkl",5,0.9,player,self.bonus[player])
 	def hupai(self,p_hu,p_from,fan,pai):
 		self.add_hand(p_hu,pai)
 		self.common_info.status[p_hu]=1
 		base=2**min(3,fan-1)  #3番封顶
 		if p_hu!=p_from: #放炮
+			print("用户：", p_from, "放炮给用户：", p_hu)
 			self.jiesuan(p_hu,base)
 			self.jiesuan(p_from, -base)
-			print(p_from,"放炮给：",p_hu)
 		else:
+			print("用户：",p_hu,"自摸")
 			base+=1 #自摸加底
-			print(p_hu, "自摸")
+			cnt=0
 			for i in range(4):
 				if i==p_hu or self.common_info.status[i]==1: continue
+				cnt+=1
 				self.jiesuan(i,-base)
-				self.jiesuan(p_hu, base)
+			self.jiesuan(p_hu, cnt*base)
+	def gangpai(self,p_gang,p_from,kind):
+		if kind==0: #点杠
+			print ("用户：",p_from,"点杠给：",p_gang)
+			self.gang_stack.append([p_gang,p_from,2])
+			self.jiesuan(p_gang,2)
+			self.jiesuan(p_from,-2)
+		elif kind==1:   #暗杠
+			print ("用户：",p_gang,"暗杠")
+			cnt=0
+			for i in range(4):
+				if i!=p_gang and self.common_info.status[i]==0: continue
+				cnt+=1
+				self.gang_stack.append([p_gang,p_from,2])
+				self.jiesuan(p_from,-2)
+			self.jiesuan(p_gang,cnt*2)
+		elif kind==2:
+			print ("用户：",p_gang,"补杠")
+			cnt=0
+			for i in range(4):
+				if i!=p_gang and self.common_info.status[i]==0: continue
+				cnt+=1
+				self.gang_stack.append([p_gang,p_from,1])
+				self.jiesuan(p_from,-1)
+			self.jiesuan(p_gang,cnt*1)
 
 	def endset(self):
-		print (self.bonus)
+
 		flag=False
 		#三个人都胡牌了，不用查叫查花猪
-		if self.common_info.pool_cnt>0: flag=True
 		if np.argwhere(self.common_info.status==1).size>=3: flag=True
 		# 检查谁有叫
 		if not flag:
+			change=False
 			good=[]
 			bad=[]
 			hua=[]
@@ -727,37 +749,46 @@ class sichuanmj_server:
 					bad.append(i)
 			#花猪赔所有
 			for i in hua:
-				self.jiesuan(i,-3*2**3)
+				change=True
+				self.bonus[i]-=2**3
 				for j in range(4):
-					if j not in hua: self.jiesuan(j,2**3)
+					if j!=i: self.bonus[j]+=2**3
 			#没叫赔有叫
 			for i in bad:
 				for j in good:
-					self.jiesuan(i,-2**max(3,mfan[j]))
-					self.jiesuan(j,2**max(3,mfan[j]))
+					change = True
+					self.bonus[i]-=2**min(3,mfan[j])
+					self.bonus[j]+=2**min(3,mfan[j])
 			#没叫返杠钱
 			for i in bad:
 				for record in self.gang_stack:
 					if record[0]==i:
-						self.jiesuan(i,-record[2])
-						self.jiesuan(record[1],record[2])
-		self.feed_ai("d:\\paras\\mj.pkl",10,0.9)
+						change=True
+						self.bonus[i]-=record[2]
+						self.bonus[record[1]]+=record[2]
+			print("本局流局！！！,输赢结果是：",self.bonus)
+			if hua: print("花猪有：",hua)
+			if bad: print("没下叫的有：",bad)
+			if change:
+				for i in range(4):
+					self.feed_ai("d:\\paras\\checkpoint.pkl",5,0.9,i,self.bonus[i])
+		else:
+			print("本局提前结束！最后输赢结果是：", self.bonus)
 
-	def feed_ai(self,filename,iter,ratio):
-		cnt=len(self.players[0].decision_stack)+len(self.players[1].decision_stack)
-		cnt+=len(self.players[2].decision_stack)+len(self.players[3].decision_stack)
+	def feed_ai(self,filename,iter,ratio,player,money):
+		cnt=len(self.players[player].decision_stack)
 		tot_input=np.empty([cnt,300],dtype=np.int)
 		tot_output=np.empty([cnt,1],dtype=np.float)
-		k=0
-		for i in range(4):
-			p=self.players[i].decision_stack
-			money=self.bonus[i]
-			while p:
-				tot_input[k,:]=p.pop()
-				tot_output[k,0]=money
-				money*=ratio
+		cur_money=money
+		for i in range(cnt):
+			p=self.players[player].decision_stack[i]
+			tot_input[i,:]=p[:]
+			tot_output[i,0]=cur_money
+			cur_money*=ratio
+		self.players[0].ai.input=tot_input
 		for i in range(iter):
-			self.players[0].ai.input=tot_input
 			self.players[0].ai.forward(True,tot_output)
 			self.players[0].ai.backward()
-		self.players[0].ai.save(filename)
+		if time.time()>self.checkpoint+600 :    #10分钟保存一次
+			self.players[0].ai.save(filename)
+			self.checkpoint=time.time()

@@ -2,6 +2,7 @@
 import numpy as np
 from abc import ABCMeta, abstractmethod
 import pickle
+import math
 
 class mnn:
 	input = None # dimension [N,D]
@@ -30,8 +31,8 @@ class mnn:
 			else:
 				p.input = self.input
 			p.forward(train)
-			#if isinstance(p,full_connect):
-			#	print ("第",k,"层全连接：",np.average(np.abs(p.para)),np.average(np.abs(p.output)))
+			if np.isnan(p.output).any():
+				raise RuntimeError("错误：神经网络输出溢出！！！！！！")
 			p=p.child
 			k+=1
 		self.output=self.tail.output

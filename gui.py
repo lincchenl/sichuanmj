@@ -21,7 +21,7 @@ class simple_gui():
 		self.list.grid(row=8, column=0, columnspan=35, sticky=W)
 		self.bt.grid(row=9)
 
-	def update(self,server,actlist,user,valid):
+	def update(self,server,actlist,user,valid,hint):
 		self.list.delete(0, END)
 		# 显示手牌
 		for i in range(4):
@@ -37,6 +37,7 @@ class simple_gui():
 			str_gang=' 杠牌：'+self.arr_to_str(gang)
 			que = server.common_info.que[i]
 			str_que=' 缺门：'+str(que)
+			if i!=0: str_hand=""
 			if i==user and actlist[0]>=1 and actlist[0]<=27:
 				str_mo='摸牌：'+self.arr_to_str([actlist[0]])
 				string = str_hand+str_mo+str_peng+str_gang+str_que
@@ -61,8 +62,8 @@ class simple_gui():
 				else:
 					self.user[i].configure(fg='BLUE')
 
-		for i in valid:
-			string=self.translate(i)
+		for i in range(len(valid)):
+			string=self.translate(valid[i])+"赢钱期望："+str(hint[i])
 			self.list.insert(END,string)
 		#显示命令
 		self.bt.configure(state=ACTIVE)
