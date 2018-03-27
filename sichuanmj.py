@@ -3,6 +3,8 @@ import split
 import time
 import gui
 import mnn
+import pickle
+import copy
 
 #   私有元素
 class sichuanmj_private:
@@ -13,6 +15,10 @@ class sichuanmj_private:
 	my_position=0
 	def __init__(self):
 		self.my_hand = np.zeros([2, 14], dtype=np.int)
+
+	def __del__(self):
+		self.my_hand=None
+		self.my_position=None
 
 #   公共元素
 class sichuanmj_public:
@@ -32,6 +38,9 @@ class sichuanmj_public:
 		# 第二维0代表杠的牌，1代表第几手杠的，2代表杠的类型，3数代表放杠的人
 		self.gang=np.zeros([4,4,4],dtype=np.int)#杠牌需要区分点杠0，暗杠1，补杠2，后补杠3（没有钱）
 
+	def __del__(self):
+		self.drop, self.status, self.hand_cnt, self.que, self.peng, self.gang = None, None, None, None, None, None
+
 #   个人视图
 class sichuanmj_client:
 	me=None
@@ -43,11 +52,27 @@ class sichuanmj_client:
 	actlist=None
 	actlist_e=None
 	decision_stack=None
+	result_stack=None
+	father=None
 	def __init__(self):
 		self.gang_able=[]
 		self.actlist=np.zeros(6,dtype=np.int)
 		self.actlist_e=np.zeros(14+14+18+1+3,dtype=np.int)
 		self.decision_stack=[]
+		self.result_stack=[]
+
+	def __del__(self):
+		self.me = None
+		self.common_info = None
+		# 当自己出牌时，记录可以杠而没杠的牌，免得每次摸牌都要重新遍历一遍
+		self.gang_able = None
+		self.gang_init = False
+		self.ai = None
+		self.actlist = None
+		self.actlist_e = None
+		self.decision_stack = None
+		self.result_stack = None
+		self.father = None
 
 	# 把当前状态转化为神经网络的输入来喂ai
 	def flatten_to_train(self):
@@ -187,7 +212,7 @@ class sichuanmj_client:
 		if self.common_info.pool_cnt==0: fan+=1
 		return fan
 	#接受并执行一个动作
-	def act(self,actlist,server):
+	def act(self,actlist,server,Gang):
 		g=server.g
 		pos=self.me.my_position
 		valid=self.valid_oper(actlist)
@@ -195,17 +220,21 @@ class sichuanmj_client:
 			hint = self.ai_cal(valid)
 			actno = g.update(server, actlist, self.me.my_position, valid,hint)
 		else:
-			actno=self.machine_choose(valid,0.5)
-		self.actlist[:]=valid[actno][:]
-		self.actlist_e[:]=self.actlist_to_extended(self.actlist)
-		self.decision_stack.append(self.flatten_to_train())
-		return valid[actno]
+			if self.father.isroot:
+				actno=self.machine_choose(copy.deepcopy(valid),Gang,10)
+				print("剩余牌数：", self.common_info.pool_cnt)
+			else:
+				actno=self.machine_choose_fast(copy.deepcopy(valid),0.9)
+		act_result=valid[actno]
+
+		return act_result
 
 	#列举出所有合法的操作
 	def valid_oper(self,actlist):
 		valid=[]
 		pos=self.me.my_position
 		hand=self.me.my_hand[0,:]
+		hand=hand[hand.nonzero()]
 		tmp=np.zeros(6,dtype=np.int)
 		#最后四张必胡
 		if self.common_info.pool_cnt<=4 and actlist[4]>0:
@@ -241,23 +270,23 @@ class sichuanmj_client:
 			valid.append(tmp.copy())
 		if actlist[0]>0: #打牌
 			tmp.fill(0)
+			pai=actlist[0]
 			start=(self.common_info.que[pos]-1)*9+1
 			end=start+8
 			index=np.argwhere((hand-start)*(hand-end)<=0)
-			if index.size!=0 or (actlist[0]-start)*(actlist[0]-end)<=0: #花猪状态
+			if index.size!=0 or (pai-start)*(pai-end)<=0: #花猪状态
 				for i in hand[index]:
 					tmp[0]=i
 					valid.append(tmp.copy())
-				if (actlist[0]-start)*(actlist[0]-end)<=0:
-					tmp[0]=actlist[0]
+				if (pai-start)*(pai-end)<=0:
+					tmp[0]=pai
 					valid.append(tmp.copy())
 			else:
 				for i in hand:
-					if i==0: continue
 					tmp[0]=i
 					valid.append(tmp.copy())
-				if actlist[0]<=27 and actlist[0]>=1:
-					tmp[0]=actlist[0]
+				if pai<=27 and pai>=1:
+					tmp[0]=pai
 					valid.append(tmp.copy())
 		tmp.fill(0)
 		#只有不存在出牌和定缺的情况，才可以不采取任何操作
@@ -293,7 +322,35 @@ class sichuanmj_client:
 			result[14+14+18+1+actlist[5]-1]=1
 		return result
 
-	def machine_choose(self,valid,ratio):
+	def machine_choose(self,valid,Gang,cnt):
+		'''
+		cnt=len(valid)
+		output=self.ai_cal(valid)
+		if np.random.rand()>=ratio:
+			#用softmax把赢钱的期望转化为选择的概率
+			e=np.exp(output)
+			e_sum=np.sum(e)
+			index=np.random.choice(cnt,1,p=(e/e_sum))[0]
+		else:
+			index=np.argmax(output)
+		'''
+		valid_cnt=len(valid)
+		expect=np.empty(valid_cnt,dtype=np.float)
+		for j in range(valid_cnt):
+			act=valid[j]
+			bonus=0
+			for i in range(cnt):
+				bonus+=self.fork_server(act,Gang)
+			self.actlist[:]=act[:]
+			self.actlist_e[:] = self.actlist_to_extended(self.actlist)
+			self.decision_stack.append(self.flatten_to_train())
+			expect[j]=bonus/cnt
+			self.result_stack.append(bonus/cnt)
+		#选择期望最高的
+		index=np.argmax(expect)
+		return index
+
+	def machine_choose_fast(self,valid,ratio):
 		cnt=len(valid)
 		output=self.ai_cal(valid)
 		if np.random.rand()>=ratio:
@@ -315,6 +372,17 @@ class sichuanmj_client:
 		self.ai.forward(train=False)
 		return self.ai.output[:,0]
 
+	def fork_server(self,actlist,Gang):
+		sv=self.father.fork()
+		pos = self.me.my_position
+		next = pos
+		next = sv.next_valid_player(sv.execute(actlist, next, Gang))
+		while next>=0:
+			next=sv.next_valid_player(sv.input(next))
+			if sv.common_info.pool_cnt==0: break
+			if np.argwhere(sv.common_info.status==1).size==3: break
+		sv.endset()
+		return sv.bonus[pos]
 
 #   服务器视图
 class sichuanmj_server:
@@ -323,10 +391,12 @@ class sichuanmj_server:
 	pool=None
 	g=None
 	checkpoint=0
+	isroot=True
 	#杠牌收钱的记录，用来最后查叫的时候赔钱退钱用
 	gang_stack=None
 	master_cnt=0 #庄家
 	step=-1
+	bonus=None
 	def __init__(self):
 		#初始化时间
 		self.checkpoint=time.time()
@@ -361,7 +431,19 @@ class sichuanmj_server:
 			self.players[i].me=sichuanmj_private()
 			self.players[i].common_info=self.common_info
 			self.players[i].me.my_position=i
+			self.players[i].father=self
 			self.players[i].ai=ai #四个小碧池共享一个ai
+
+	def __del__(self):
+		self.players[0] = None
+		self.players[1] = None
+		self.players[2] = None
+		self.players[3] = None
+		self.common_info = None
+		self.pool = None
+		self.g = None
+		self.gang_stack = None
+		self.bonus = None
 
 	#重新开始一局牌
 	def restart(self,master):
@@ -391,6 +473,8 @@ class sichuanmj_server:
 			self.players[i].gang_able=[]
 			self.players[i].gang_init=False
 			self.players[i].decision_stack=[]
+			self.players[i].result_stack = []
+			self.players[i].father=self
 		self.mopai()
 
 	#摸n张牌
@@ -486,7 +570,7 @@ class sichuanmj_server:
 		# 分别代表：打牌，吃牌，碰牌，杠牌，胡牌，定缺
 		# 服务器端给客户端的actlist哪一项为1代表哪一项允许执行，为0代表不允许
 		if self.common_info.pool_cnt==0: return -1
-		flag_gang,flag_hu=0,0
+		flag_gang=0
 		self.step+=1
 		actlist=np.zeros(6,dtype=np.int)
 		pai=self.fetch(1)[0]
@@ -494,12 +578,13 @@ class sichuanmj_server:
 		#判断是否可以杠或者胡牌
 		fan=me.isHu(pai,Gang)
 		if me.isGang(pai,player_cnt).size >0 and self.common_info.pool_cnt>0: flag_gang=1
-		if fan> 0: flag_hu = 1
 		allow=[0]
-		if flag_hu==1: allow.append(4)
-		if flag_gang==1 : allow.append(3)
+		if fan>0: allow.append(4)
+		if flag_gang>0 : allow.append(3)
 		actlist[0],actlist[3],actlist[4]=pai,flag_gang,fan
-		actlist[:]=self.players[player_cnt].act(actlist,self)
+		self.players[player_cnt].me.my_hand[:,0]=[pai,self.step]
+		actlist[:]=self.players[player_cnt].act(actlist,self,Gang)
+		self.players[player_cnt].me.my_hand[:,0]=[0,0]
 		self.validate_actlist(player_cnt,actlist,allow)
 		index=np.argwhere(actlist>0)
 		if index.size==0: self.error(player_cnt,92)
@@ -518,12 +603,12 @@ class sichuanmj_server:
 				#抢杠
 				rel_max=0
 				for i in range(4):
-					if i==player_cnt: continue
+					if i==player_cnt or self.common_info.status[i]==1: continue
 					fan = self.players[i].isHu(actlist[3],1)
 					if fan>0:
 						a_back.fill(0)
 						a_back[4]=fan
-						a_back[:]=self.players[i].act(a_back,self)
+						a_back[:]=self.players[i].act(a_back,self,Gang)
 						self.validate_actlist(i,a_back,[4])
 						if a_back[4]>0:    #胡牌
 							self.hupai(i,player_cnt,fan,actlist[3])
@@ -568,7 +653,7 @@ class sichuanmj_server:
 			fan=self.players[i].isHu(pai,Gang)
 			if fan>0:
 				actlist[4]=fan
-				actlist=self.players[i].act(actlist,self)
+				actlist=self.players[i].act(actlist,self,Gang)
 				self.validate_actlist(i,actlist,[4])
 				index=np.argwhere(actlist>0)
 				if index.size==1:
@@ -584,12 +669,11 @@ class sichuanmj_server:
 			if i==player_cnt or self.common_info.status[i]==1: continue
 			index=self.players[i].isPeng(pai)
 			if index.size>0:
-				cur=index[0]
 				actlist.fill(0)
 				actlist[2]=pai
-				actlist=self.players[i].act(actlist,self)
-				index = np.argwhere(actlist > 0)
-				self.validate_actlist(i,actlist,[2])
+				do_act=self.players[i].act(actlist,self,Gang)
+				index = np.argwhere(do_act > 0)
+				self.validate_actlist(i,do_act,[2])
 				if index.size==1:
 					if index[0]!=2: self.error(i,98)
 					#碰牌
@@ -597,11 +681,13 @@ class sichuanmj_server:
 					self.del_hand(i,pai,2)
 					actlist.fill(0)
 					actlist[0]=99
-					actlist=self.players[i].act(actlist,self)
-					self.validate_actlist(i,actlist,[0])
-					if actlist[0]<=0: self.error(i,93)
-					self.del_hand(i,actlist[0],1)
-					return self.output(actlist[0],i)
+					do_act=self.players[i].act(actlist,self,Gang)
+					self.validate_actlist(i,do_act,[0])
+					if do_act[0]<=0: self.error(i,93)
+					self.del_hand(i,do_act[0],1)
+					return self.output(do_act[0],i)
+				else:
+					break
 		# 杠
 		for i in range(4):
 			if i==player_cnt or self.common_info.status[i]==1: continue
@@ -609,15 +695,18 @@ class sichuanmj_server:
 			if index.size>0 and self.common_info.pool_cnt>0:
 				actlist.fill(0)
 				actlist[3]=pai
-				actlist=self.players[i].act(actlist,self)
-				index = np.argwhere(actlist > 0)
-				self.validate_actlist(i,actlist,[3])
+				do_act=self.players[i].act(actlist,self,Gang)
+				index = np.argwhere(do_act > 0)
+				self.validate_actlist(i,do_act,[3])
 				if index.size==1:
+					if index[0] != 3: self.error(i, 98)
 					self.add_gang(i,player_cnt,0,pai)
 					self.del_hand(i,pai,3)
 					# 奖金结算
 					self.gangpai(i,player_cnt,2)
 					return self.input(i,1)
+				else:
+					break
 
 		#出牌
 		#放入堂子中
@@ -671,11 +760,12 @@ class sichuanmj_server:
 		index=np.argwhere(actlist>0)
 		if index.size>1: self.error(player_cnt,90) #命令多于一个
 		if index.size==0: return
-		if index.size==1 and (not index[0] in allow): self.error(player_cnt,91)
+		if index.size==1 and (not index[0] in allow):
+			self.error(player_cnt,91)
 
 	def jiesuan(self,player,money):
 		self.bonus[player]+=money
-		self.feed_ai("d:\\paras\\checkpoint.pkl",5,0.9,player,self.bonus[player])
+		#self.feed_ai("d:\\paras\\checkpoint.pkl",5,0.9,player,self.bonus[player])
 	def hupai(self,p_hu,p_from,fan,pai):
 		self.add_hand(p_hu,pai)
 		self.common_info.status[p_hu]=1
@@ -703,7 +793,7 @@ class sichuanmj_server:
 			print ("用户：",p_gang,"暗杠")
 			cnt=0
 			for i in range(4):
-				if i!=p_gang and self.common_info.status[i]==0: continue
+				if i!=p_gang or self.common_info.status[i]==1: continue
 				cnt+=1
 				self.gang_stack.append([p_gang,p_from,2])
 				self.jiesuan(p_from,-2)
@@ -712,11 +802,93 @@ class sichuanmj_server:
 			print ("用户：",p_gang,"补杠")
 			cnt=0
 			for i in range(4):
-				if i!=p_gang and self.common_info.status[i]==0: continue
+				if i!=p_gang or self.common_info.status[i]==1: continue
 				cnt+=1
 				self.gang_stack.append([p_gang,p_from,1])
 				self.jiesuan(p_from,-1)
 			self.jiesuan(p_gang,cnt*1)
+	def execute(self,actlist,player_cnt,Gang=0):
+		hand=self.players[player_cnt].me.my_hand
+		me = self.players[player_cnt]
+		if hand[0,0]>0:
+			#大于0即是摸牌阶段
+			pai=self.players[player_cnt].me.my_hand[0,0]
+			hand[:,0].fill(0)
+			if actlist[3]>0:
+				a_back=actlist.copy()
+				if not actlist[3] in self.common_info.peng[player_cnt,0,:]:   #暗杠
+					if pai==actlist[3]:
+						self.del_hand(player_cnt,pai,3)
+						self.add_gang(player_cnt,player_cnt,1,pai)
+					else:
+						self.del_hand(player_cnt, actlist[3], 4)
+						self.add_gang(player_cnt, player_cnt, 1, actlist[3])
+						self.add_hand(player_cnt,pai)
+					self.gangpai(player_cnt,player_cnt,1)
+				else :  #补杠
+					#抢杠
+					rel_max=0
+					for i in range(4):
+						if i==player_cnt or self.common_info.status[i]==1: continue
+						fan = self.players[i].isHu(actlist[3],1)
+						if fan>0:
+							a_back.fill(0)
+							a_back[4]=fan
+							a_back[:]=self.players[i].act(a_back,self,Gang)
+							self.validate_actlist(i,a_back,[4])
+							if a_back[4]>0:    #胡牌
+								self.hupai(i,player_cnt,fan,actlist[3])
+								rel_pos=(i-player_cnt)%4
+								if rel_pos>rel_max: rel_max=rel_pos
+					if rel_max>0:
+						self.players[player_cnt].gang_able.remove(actlist[3])
+						rel_max=(rel_max+player_cnt)%4
+						return rel_max
+					if actlist[3] == pai:   #有钱的补杠
+						self.add_gang(player_cnt,player_cnt,2,pai)
+						self.del_peng(player_cnt,pai)
+						self.gangpai(player_cnt,player_cnt,2)
+					else:
+						self.add_gang(player_cnt,player_cnt,3,actlist[3])
+						self.del_peng(player_cnt,actlist[3])
+						self.del_hand(player_cnt,actlist[3],1)
+						self.add_hand(player_cnt,pai)
+				me.gang_able.remove(actlist[3])
+				return self.input(player_cnt,1)
+			elif actlist[4]>0:
+					self.hupai(player_cnt,player_cnt,actlist[4],pai)
+					return player_cnt
+			elif actlist[0]>0:
+					if pai!=actlist[0]:
+						self.del_hand(player_cnt,actlist[0], 1)
+						self.add_hand(player_cnt,pai)
+					#出牌
+					return self.output(actlist[0],player_cnt, Gang)
+		else:
+			# 碰
+			if actlist[2]>0:
+				pai=actlist[2]
+				actlist.fill(0)
+				actlist[2] = pai
+				self.add_peng(player_cnt, pai)
+				self.del_hand(player_cnt, pai, 2)
+				actlist.fill(0)
+				actlist[0] = 99
+				do_act = self.players[player_cnt].act(actlist, self,Gang)
+				self.validate_actlist(player_cnt, do_act, [0])
+				if do_act[0] <= 0: self.error(player_cnt, 93)
+				self.del_hand(player_cnt, do_act[0], 1)
+				return self.output(do_act[0], player_cnt)
+			# 杠
+			elif actlist[3]>0:
+				pai=actlist[3]
+				actlist.fill(0)
+				self.add_gang(player_cnt, player_cnt, 0, pai)
+				self.del_hand(player_cnt, pai, 3)
+				# 奖金结算
+				self.gangpai(player_cnt, player_cnt, 2)
+				return self.input(player_cnt, 1)
+			return player_cnt
 
 	def endset(self):
 
@@ -766,25 +938,21 @@ class sichuanmj_server:
 						change=True
 						self.bonus[i]-=record[2]
 						self.bonus[record[1]]+=record[2]
-			print("本局流局！！！,输赢结果是：",self.bonus)
-			if hua: print("花猪有：",hua)
-			if bad: print("没下叫的有：",bad)
-			if change:
-				for i in range(4):
-					self.feed_ai("d:\\paras\\checkpoint.pkl",5,0.9,i,self.bonus[i])
-		else:
-			print("本局提前结束！最后输赢结果是：", self.bonus)
+			#print("本局流局！！！,输赢结果是：",self.bonus)
+			#if hua: print("花猪有：",hua)
+			#if bad: print("没下叫的有：",bad)
+		#else:
+			#print("本局提前结束！最后输赢结果是：", self.bonus)
 
-	def feed_ai(self,filename,iter,ratio,player,money):
+	def feed_ai(self,filename,iter,player):
 		cnt=len(self.players[player].decision_stack)
 		tot_input=np.empty([cnt,300],dtype=np.int)
 		tot_output=np.empty([cnt,1],dtype=np.float)
-		cur_money=money
 		for i in range(cnt):
 			p=self.players[player].decision_stack[i]
+			q=self.players[player].result_stack[i]
 			tot_input[i,:]=p[:]
-			tot_output[i,0]=cur_money
-			cur_money*=ratio
+			tot_output[i,0]=q
 		self.players[0].ai.input=tot_input
 		for i in range(iter):
 			self.players[0].ai.forward(True,tot_output)
@@ -792,3 +960,21 @@ class sichuanmj_server:
 		if time.time()>self.checkpoint+600 :    #10分钟保存一次
 			self.players[0].ai.save(filename)
 			self.checkpoint=time.time()
+
+	#完全复制一个server对象，它们的ai，gui可以共享。但是必须完全复制它们的每一个元素
+	def fork(self):
+		gui=self.g
+		ai=self.players[0].ai
+		self.g=None
+		for i in range(4):
+			self.players[i].ai=None
+			self.players[i].father=None
+		cp=pickle.loads(pickle.dumps(self,-1))
+		cp.isroot=False
+		for i in range(4):
+			cp.players[i].ai=ai
+			cp.players[i].father=cp
+			self.players[i].ai=ai
+			self.players[i].father=self
+		self.g=gui
+		return cp
