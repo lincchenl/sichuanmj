@@ -53,7 +53,7 @@ class sichuanmj_client:
 	actlist_e=None
 	decision_stack=None
 	result_stack=None
-	father=None
+	level=0
 	def __init__(self):
 		self.gang_able=[]
 		self.actlist=np.zeros(6,dtype=np.int)
@@ -72,7 +72,7 @@ class sichuanmj_client:
 		self.actlist_e = None
 		self.decision_stack = None
 		self.result_stack = None
-		self.father = None
+		#self.father = None
 
 	# 把当前状态转化为神经网络的输入来喂ai
 	def flatten_to_train(self):
@@ -220,11 +220,11 @@ class sichuanmj_client:
 			hint = self.ai_cal(valid)
 			actno = g.update(server, actlist, self.me.my_position, valid,hint)
 		else:
-			if self.father.isroot:
-				actno=self.machine_choose(copy.deepcopy(valid),Gang,10)
+			if self.level<=0:
+				actno=self.machine_choose(server,valid,Gang,10)
 				print("剩余牌数：", self.common_info.pool_cnt)
 			else:
-				actno=self.machine_choose_fast(copy.deepcopy(valid),0.9)
+				actno=self.machine_choose_fast(valid,0.9)
 		act_result=valid[actno]
 
 		return act_result
@@ -322,25 +322,14 @@ class sichuanmj_client:
 			result[14+14+18+1+actlist[5]-1]=1
 		return result
 
-	def machine_choose(self,valid,Gang,cnt):
-		'''
-		cnt=len(valid)
-		output=self.ai_cal(valid)
-		if np.random.rand()>=ratio:
-			#用softmax把赢钱的期望转化为选择的概率
-			e=np.exp(output)
-			e_sum=np.sum(e)
-			index=np.random.choice(cnt,1,p=(e/e_sum))[0]
-		else:
-			index=np.argmax(output)
-		'''
+	def machine_choose(self,server,valid,Gang,cnt):
 		valid_cnt=len(valid)
 		expect=np.empty(valid_cnt,dtype=np.float)
 		for j in range(valid_cnt):
 			act=valid[j]
 			bonus=0
 			for i in range(cnt):
-				bonus+=self.fork_server(act,Gang)
+				bonus+=self.fork_server(server,act,Gang)
 			self.actlist[:]=act[:]
 			self.actlist_e[:] = self.actlist_to_extended(self.actlist)
 			self.decision_stack.append(self.flatten_to_train())
@@ -372,8 +361,8 @@ class sichuanmj_client:
 		self.ai.forward(train=False)
 		return self.ai.output[:,0]
 
-	def fork_server(self,actlist,Gang):
-		sv=self.father.fork()
+	def fork_server(self,server,actlist,Gang):
+		sv=server.fork()
 		pos = self.me.my_position
 		next = pos
 		next = sv.next_valid_player(sv.execute(actlist, next, Gang))
@@ -391,7 +380,6 @@ class sichuanmj_server:
 	pool=None
 	g=None
 	checkpoint=0
-	isroot=True
 	#杠牌收钱的记录，用来最后查叫的时候赔钱退钱用
 	gang_stack=None
 	master_cnt=0 #庄家
@@ -416,7 +404,7 @@ class sichuanmj_server:
 		ai.addlayer(fc3)
 		ai.addlayer(mnn.active_function(1))
 		#读取已经训练的数据
-		ai=ai.load("d:\\paras\\mj.pkl")
+		#ai=ai.load("d:\\paras\\mj.pkl")
 		#初始化公共视图
 		self.common_info=sichuanmj_public()
 		self.players=np.zeros(4,dtype=sichuanmj_client)
@@ -431,7 +419,7 @@ class sichuanmj_server:
 			self.players[i].me=sichuanmj_private()
 			self.players[i].common_info=self.common_info
 			self.players[i].me.my_position=i
-			self.players[i].father=self
+			self.players[i].level=0
 			self.players[i].ai=ai #四个小碧池共享一个ai
 
 	def __del__(self):
@@ -474,7 +462,6 @@ class sichuanmj_server:
 			self.players[i].gang_init=False
 			self.players[i].decision_stack=[]
 			self.players[i].result_stack = []
-			self.players[i].father=self
 		self.mopai()
 
 	#摸n张牌
@@ -807,7 +794,8 @@ class sichuanmj_server:
 				self.gang_stack.append([p_gang,p_from,1])
 				self.jiesuan(p_from,-1)
 			self.jiesuan(p_gang,cnt*1)
-	def execute(self,actlist,player_cnt,Gang=0):
+	def execute(self,act,player_cnt,Gang=0):
+		actlist=copy.deepcopy(act)
 		hand=self.players[player_cnt].me.my_hand
 		me = self.players[player_cnt]
 		if hand[0,0]>0:
@@ -888,6 +876,10 @@ class sichuanmj_server:
 				# 奖金结算
 				self.gangpai(player_cnt, player_cnt, 2)
 				return self.input(player_cnt, 1)
+			#碰牌后打出的牌
+			elif actlist[0]>0:
+				self.del_hand(player_cnt, actlist[0], 1)
+				return self.output(actlist[0], player_cnt)
 			return player_cnt
 
 	def endset(self):
@@ -968,13 +960,10 @@ class sichuanmj_server:
 		self.g=None
 		for i in range(4):
 			self.players[i].ai=None
-			self.players[i].father=None
 		cp=pickle.loads(pickle.dumps(self,-1))
-		cp.isroot=False
 		for i in range(4):
 			cp.players[i].ai=ai
-			cp.players[i].father=cp
 			self.players[i].ai=ai
-			self.players[i].father=self
+			cp.players[i].level=self.players[i].level+1
 		self.g=gui
 		return cp
