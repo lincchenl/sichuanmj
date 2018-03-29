@@ -413,7 +413,7 @@ class sichuanmj_server:
 		ai.addlayer(fc3)
 		ai.addlayer(mnn.active_function(1))
 		#读取已经训练的数据
-		ai=ai.load("d:\\paras\\mj.pkl")
+		#ai=ai.load("d:\\paras\\mj.pkl")
 		#初始化公共视图
 		self.common_info=sichuanmj_public()
 		self.players=np.zeros(4,dtype=sichuanmj_client)
@@ -571,6 +571,8 @@ class sichuanmj_server:
 		actlist=np.zeros(6,dtype=np.int)
 		pai=self.fetch(1)[0]
 		me=self.players[player_cnt]
+		me.queue=[]
+		check_list=[]
 		#判断是否可以杠或者胡牌
 		fan=me.isHu(pai,Gang)
 		if me.isGang(pai,player_cnt).size >0 and self.common_info.pool_cnt>0: flag_gang=1
@@ -595,23 +597,33 @@ class sichuanmj_server:
 				self.gangpai(player_cnt,player_cnt,1)
 			else :  #补杠
 				#抢杠
-				rel_max=0
-				for i in range(4):
+				# 剔除自己和已经胡牌的人，参照自己的顺序建立一个名单
+				for i in range(player_cnt + 1, player_cnt + 4):
+					real_i = i % 4
+					if self.common_info.status[real_i] == 0: check_list.append(real_i)
+				#逐个检查是否胡牌
+				for i in check_list:
 					if i==player_cnt or self.common_info.status[i]==1: continue
 					fan = self.players[i].isHu(actlist[3],1)
 					if fan>0:
-						a_back.fill(0)
-						a_back[4]=fan
-						a_back[:]=self.players[i].act(a_back,self,Gang,player_cnt,pai)
-						self.validate_actlist(i,a_back,[4])
-						if a_back[4]>0:    #胡牌
-							self.hupai(i,player_cnt,fan,actlist[3])
-							rel_pos=(i-player_cnt)%4
-							if rel_pos>rel_max: rel_max=rel_pos
-				if rel_max>0:
-					me.gang_able.remove(actlist[3])
-					rel_max=(rel_max+player_cnt)%4
-					return rel_max
+						me.queue.append(np.array([0,0,0,0,fan,0,player_cnt,pai],dtype=np.int))
+				#把杠牌放入到队列的最后一个任务
+				me.queue.append(np.array([0,0,0,actlist[3],0,0,player_cnt,pai]))
+				#处理队列中的胡牌请求
+				next=-1
+				while me.queue:
+					act=me.queue.pop(0)
+					my_cnt=act[6]
+					pai=act[7]
+					if act[4]<=0: break
+					a_back[:]=self.players[my_cnt].act(act[:6],self,1,player_cnt,pai)
+					self.validate_actlist(my_cnt,a_back,[4])
+					if a_back[4]>0:    #胡牌
+						self.hupai(my_cnt,player_cnt,fan,actlist[3])
+						#只要有一个人胡牌，就不再允许补杠
+						if me.queue[-1][4]<=0: me.queue.pop(-1)
+						next=my_cnt
+				if next>=0: return next
 				if actlist[3] == pai:   #有钱的补杠
 					self.add_gang(player_cnt,player_cnt,2,pai)
 					self.del_peng(player_cnt,pai)
@@ -935,12 +947,23 @@ class sichuanmj_server:
 					actlist = self.players[me].act(act[0:6], self, Gang, no_from, pai)
 					self.validate_actlist(me,actlist, [3])
 					if actlist[3] > 0:
-						self.add_gang(me, no_from, 0, pai)
-						self.del_hand(me, pai, 3)
-						# 奖金结算
-						self.gangpai(me,no_from, 0)
-						self.players[no_from].queue=[]
-						queue = []
+						if actlist[3] not in self.common_info.peng[me,0,:]: #点杠
+							self.add_gang(me, no_from, 0, pai)
+							self.del_hand(me, pai, 3)
+							# 奖金结算
+							self.gangpai(me,no_from, 0)
+						elif pai==actlist[3]:       #有钱的补杠
+							self.add_gang(me, no_from, 2, pai)
+							self.del_peng(me, pai)
+							self.gangpai(me, no_from, 2)
+							self.players[me].gang_able.remove(actlist[3])
+						else:
+							self.add_gang(me, no_from, 3, actlist[3])
+							self.del_peng(me, actlist[3])
+							self.del_hand(me, actlist[3], 1)
+							self.add_hand(me, pai)
+							self.gangpai(me, no_from, 3)
+							self.players[me].gang_able.remove(actlist[3])
 						return self.input(me, 1)
 			if next>=0: return next
 			# 出牌
@@ -975,7 +998,7 @@ class sichuanmj_server:
 					if fan>maxfan: maxfan=fan
 				if maxfan>0:
 					good.append(i)
-					mfan[i]=maxfan
+					mfan[i]=maxfan-1-1  #计算番数的时候从1番开始，且当牌池为0时处理成海底捞月加番，所以还要再减1
 				else:
 					bad.append(i)
 			#花猪赔所有
