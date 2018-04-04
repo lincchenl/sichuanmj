@@ -2,7 +2,6 @@
 import numpy as np
 from abc import ABCMeta, abstractmethod
 import pickle
-import math
 
 class mnn:
 	input = None # dimension [N,D]
@@ -49,10 +48,15 @@ class mnn:
 			p.update(train) #更新每一层参数，比如全连接层的系数或者BN层的beta，gamma
 			p=p.parent
 	def save(self, filename):
-		#在保存之前先把网络的规格变成batch=1,瘦身
-		self.input=self.input[0:0,:]
-		self.forward(False)
-		self.backward(False)
+		#去除每一层的input,output,dx,dout
+		p=self.head
+		while p:
+			p.input=None
+			p.output=None
+			p.dx=None
+			p.dout=None
+			if isinstance(p,full_connect): p.dpara=None
+			p=p.child
 		f = open(filename, 'wb')
 		pickle.dump(self, f)
 		f.close()

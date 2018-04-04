@@ -90,10 +90,10 @@ class simple_gui():
 		      10: '一条', 11: '二条', 12: '三条', 13: '四条', 14: '五条', 15: '六条', 16: '七条', 17: '八条', 18: '九条',
 		      19: '一筒', 20: '二筒', 21: '三筒', 22: '四筒', 23: '五筒', 24: '六筒', 25: '七筒', 26: '八筒', 27: '九筒'}
 		string="放弃，什么也不做"
-		if actlist[0]>0:
-			string="出牌："+dict[actlist[0]]
 		if actlist[2]>0:
-			string = "碰牌：" + dict[actlist[2]]
+			string = "碰牌：" + dict[actlist[2]]+" 之后出牌："+dict[actlist[0]]
+		if actlist[0]>0 and actlist[2]==0:
+			string="出牌："+dict[actlist[0]]
 		if actlist[3]>0:
 			string = "杠牌：" + dict[actlist[3]]
 		if actlist[4]>0:
